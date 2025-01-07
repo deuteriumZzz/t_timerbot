@@ -23,15 +23,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Глобальная переменная для хранения текущей даты
+current_date = datetime.now()
+
+def generate_calendar_buttons(year, month):
+    """Генерирует кнопки для выбора даты в виде календаря."""
+    keyboard = []
+    month_start = datetime(year, month, 1)
+    # Получаем последний день месяца
+    next_month = month + 1 if month < 12 else 1
+    year_end = year if month < 12 else year + 1
+    month_end = (datetime(year_end, next_month, 1) - timedelta(days=1)).day
+
+    # Добавляем заголовок с днями недели
+    keyboard.append([InlineKeyboardButton("Пн", callback_data='ignore'),
+                     InlineKeyboardButton("Вт", callback_data='ignore'),
+                     InlineKeyboardButton("Ср", callback_data='ignore'),
+                     InlineKeyboardButton("Чт", callback_data='ignore'),
+                     InlineKeyboardButton("Пт", callback_data='ignore'),
+                     InlineKeyboardButton("Сб", callback_data='ignore'),
+                     InlineKeyboardButton("Вс", callback_data='ignore')])
+
+    # Заполняем кнопки датами
+    day = 1
+    while day <= month_end:
+        row = []
+        for _ in range(7):  # 7 дней в неделе
+            if day <= month_end:
+                row.append(InlineKeyboardButton(day, callback_data=f'{year}-{month:02d}-{day:02d}'))
+            else:
+                row.append(InlineKeyboardButton(" ", callback_data='ignore'))
+            day += 1
+        keyboard.append(row)
+
+    # Добавляем кнопки для навигации по месяцам
+    keyboard.append([
+        InlineKeyboardButton("<<", callback_data=f'prev_month-{year}-{month}'),
+        InlineKeyboardButton(f"{month:02d}/{year}", callback_data='ignore'),
+        InlineKeyboardButton(">>", callback_data=f'next_month-{year}-{month}')
+    ])
+    
+    keyboard.append([InlineKeyboardButton("Назад", callback_data='back')])
+    return keyboard
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет сообщение с кнопками выбора даты для таймера."""
-    keyboard = [
-        [InlineKeyboardButton("Сегодня", callback_data='0')],
-        [InlineKeyboardButton("Завтра", callback_data='1')],
-        [InlineKeyboardButton("Через 3 дня", callback_data='3')],
-        [InlineKeyboardButton("Выбрать дату", callback_data='choose_date')]
-    ]
+    global current_date
+    keyboard = generate_calendar_buttons(current_date.year, current_date.month)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -39,27 +77,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия кнопок для установки таймера."""
     query = update.callback_query
     await query.answer()
 
-    if query.data == 'choose_date':
-        await query.message.reply_text(
-            "Пожалуйста, введите дату в формате ГГГГ-ММ-ДД:"
-        )
-        return
+    if query.data.startswith('prev_month'):
+        year, month = map(int, query.data.split('-')[1:])
+        month -= 1
+        if month < 1:
+            month = 12
+            year -= 1
+        keyboard = generate_calendar_buttons(year, month)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text('Выберите дату для таймера:', reply_markup=reply_markup)
 
-    days_to_add = int(query.data)
-    target_date = datetime.now() + timedelta(days=days_to_add)
-    await set_timer(target_date, query)
+    elif query.data.startswith('next_month'):
+        year, month = map(int, query.data.split('-')[1:])
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        keyboard = generate_calendar_buttons(year, month)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text('Выберите дату для таймера:', reply_markup=reply_markup)
 
+    elif query.data == 'back':
+        await start(update, context)  # Вернуться к выбору даты
+
+    else:
+        # Получаем выбранную дату
+        selected_date = query.data
+        target_date = datetime.strptime(selected_date, '%Y-%m-%d')
+
+        await set_timer(target_date, query)
 
 async def set_timer(target_date, query):
-    """
-    Устанавливает таймер на указанную дату и запускает его в отдельном потоке.
-    """
+    """Устанавливает таймер на указанную дату и запускает его в отдельном потоке."""
     chat_id = query.message.chat_id
     event_time = int((target_date - datetime.now()).total_seconds())
 
@@ -72,7 +126,6 @@ async def set_timer(target_date, query):
         args=(event_time, chat_id, message.message_id)
     ).start()
 
-
 def run_timer(event_time, chat_id, message_id):
     """Запускает таймер и отправляет сообщение по его истечении."""
     time.sleep(event_time)
@@ -82,38 +135,6 @@ def run_timer(event_time, chat_id, message_id):
         text="Таймер завершен! Время события истекло!"
     )
 
-
-async def handle_date_input(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    """Обрабатывает ввод даты пользователем и устанавливает таймер."""
-    user_input = update.message.text
-    try:
-        target_date = datetime.strptime(user_input, '%Y-%m-%d')
-        event_time = int((target_date - datetime.now()).total_seconds())
-
-        if event_time < 0:
-            await update.message.reply_text(
-                "Выберите дату в будущем."
-            )
-            return
-
-        message = await update.message.reply_text(
-            f"Таймер установлен на {target_date.strftime('%Y-%m-%d')}."
-        )
-
-        threading.Thread(
-            target=run_timer,
-            args=(event_time, update.message.chat_id, message.message_id)
-        ).start()
-    except ValueError:
-        await update.message.reply_text(
-            "Неверный формат даты. Пожалуйста, используйте формат "
-            "ГГГГ-ММ-ДД."
-        )
-
-
 def main():
     """Основная функция для запуска бота."""
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -122,10 +143,8 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(CommandHandler("set_date", handle_date_input))
 
     application.run_polling()
-
 
 if __name__ == '__main__':
     main()
